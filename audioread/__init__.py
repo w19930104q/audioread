@@ -15,7 +15,7 @@
 """Multi-library, cross-platform audio decoding."""
 
 from . import ffdec
-from .exceptions import DecodeError, NoBackendError
+from .exceptions import BackendFailure, DecodeError, NoBackendError
 from .base import AudioFile  # noqa
 
 
@@ -116,16 +116,25 @@ def audio_open(path, backends=None):
     the result to each `audio_open` call.
 
     If all backends fail to read the file, a NoBackendError exception is
-    raised.
+    raised. The exception carries a ``failures`` attribute with a
+    :class:`BackendFailure` record for every backend that was tried, so
+    the failure category and reason of each backend can be inspected.
     """
     if backends is None:
         backends = available_backends()
 
+    failures = []
     for BackendClass in backends:
         try:
             return BackendClass(path)
-        except DecodeError:
-            pass
+        except DecodeError as exc:
+            # Remember why this backend failed and fall back to the
+            # next one.
+            failures.append(
+                BackendFailure.from_exception(
+                    BackendClass.__name__, exc
+                )
+            )
 
     # All backends failed!
-    raise NoBackendError()
+    raise NoBackendError(failures)

@@ -73,12 +73,22 @@ that you have a broken installation of `FFmpeg`_. To check, try typing
 FFmpeg with your OS's package manager (e.g., apt or yum) or `using Conda
 <https://anaconda.org/conda-forge/ffmpeg>`_.
 
+When one or more backends were tried, the exception's ``failures`` attribute
+contains a ``BackendFailure`` record for each backend, in the order they were
+tried. Each record exposes the backend name (``backend``), the qualified
+exception type as the failure category (``exception_type``), a short reason
+summary (``reason``), and the original exception instance (``exception``), so
+you can see why every individual backend failed instead of only learning that
+all of them did. The exception's string message contains the same summary.
+
 Version History
 ---------------
 
 Upcoming
   Optimize raw backend PCM conversion path in `audioread/rawread.py`. This skips
   a Python loop and can increase loading times by up to a factor of 150x.
+  ``NoBackendError`` now aggregates the failure category and reason of every
+  backend that was tried, via its new ``failures`` attribute.
 
 3.1.0
   Official support for Python 3.12 and 3.13!
