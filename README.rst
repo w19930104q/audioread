@@ -37,6 +37,10 @@ Buffers in the file can be accessed by iterating over the object returned from
 data**. (Currently, these PCM format parameters are not configurable, but this
 could be added to most of the backends.)
 
+Every new iteration starts reading from the beginning of the file, on every
+backend: reading the same audio file object twice yields the same sequence of
+samples. (Starting a new iteration discards any iterator still in progress.)
+
 Additional values are available as fields on the audio file object:
 
 - ``channels`` is the number of audio channels (an integer).

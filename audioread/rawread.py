@@ -118,7 +118,15 @@ class RawAudioFile(AudioFile):
         return float(self._file.getnframes()) / self.samplerate
 
     def read_data(self, block_samples=1024):
-        """Generates blocks of PCM data found in the file."""
+        """Generates blocks of PCM data found in the file.
+
+        Each call starts reading from the beginning of the file, so
+        reading the same object twice yields the same data.
+        """
+        # Rewind to the first frame so that repeated reads produce
+        # identical data.
+        self._file.setpos(0)
+
         old_width = self._file.getsampwidth()
         needs_conversion = old_width != TARGET_WIDTH
         needs_byteswap = (

@@ -122,6 +122,21 @@ windows_error_mode_lock = threading.Lock()
 class FFmpegAudioFile(AudioFile):
     """An audio file decoded by the ffmpeg command-line utility."""
     def __init__(self, filename, block_size=DEFAULT_BUFFER_SIZE):
+        self._filename = filename
+        self._block_size = block_size
+        # Whether a read has been started since the decoder process was
+        # (re)started. Used to decide when the process must be
+        # restarted to read from the beginning again.
+        self._read_started = False
+        self._start()
+
+    def _start(self):
+        """Start (or restart) the ffmpeg decoding process, positioned
+        at the beginning of the file.
+        """
+        filename = self._filename
+        block_size = self._block_size
+
         # On Windows, we need to disable the subprocess's crash dialog
         # in case it dies. Passing SEM_NOGPFAULTERRORBOX to SetErrorMode
         # disables this behavior.
@@ -177,7 +192,17 @@ class FFmpegAudioFile(AudioFile):
         self.stderr_reader.start()
 
     def read_data(self, timeout=10.0):
-        """Read blocks of raw PCM data from the file."""
+        """Read blocks of raw PCM data from the file.
+
+        Each call starts reading from the beginning of the file, so
+        reading the same object twice yields the same data.
+        """
+        if self._read_started:
+            # A previous read already consumed (part of) the decoder's
+            # output. Restart the process to read from the beginning.
+            self._rewind()
+        self._read_started = True
+
         # Read from stdout in a separate thread and consume data from
         # the queue.
         start_time = time.time()
@@ -276,6 +301,13 @@ class FFmpegAudioFile(AudioFile):
         else:
             # No duration found.
             self.duration = 0
+
+    def _rewind(self):
+        """Return the decoder to the beginning of the file by
+        restarting the ffmpeg process.
+        """
+        self.close()
+        self._start()
 
     def close(self):
         """Close the ffmpeg process used to perform the decoding."""

@@ -31,6 +31,10 @@ class MadAudioFile(AudioFile):
         if not self.mf.total_time():  # Indicates a failed open.
             self.fp.close()
             raise UnsupportedError()
+        # Whether a read has been started since the decoder was
+        # (re)created. Used to decide when to rewind to the beginning
+        # for a new read.
+        self._read_started = False
 
     def close(self):
         if hasattr(self, 'fp'):
@@ -40,7 +44,18 @@ class MadAudioFile(AudioFile):
 
     def read_blocks(self, block_size=4096):
         """Generates buffers containing PCM data for the audio file.
+
+        Each call starts reading from the beginning of the file, so
+        reading the same object twice yields the same data.
         """
+        if self._read_started:
+            # A previous read already consumed (part of) the stream.
+            # Rewind by re-creating the decoder on the file object
+            # positioned back at the start.
+            self.fp.seek(0)
+            self.mf = mad.MadFile(self.fp)
+        self._read_started = True
+
         while True:
             out = self.mf.read(block_size)
             if not out:

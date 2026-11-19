@@ -70,6 +70,11 @@ _coreaudio.ExtAudioFileRead.restype = ctypes.c_int
 _coreaudio.ExtAudioFileRead.argtypes = \
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
 
+# Seek to a frame position in an audio file.
+_coreaudio.ExtAudioFileSeek.restype = ctypes.c_int
+_coreaudio.ExtAudioFileSeek.argtypes = \
+    [ctypes.c_void_p, ctypes.c_longlong]
+
 # Close/free an audio file.
 _coreaudio.ExtAudioFileDispose.restype = ctypes.c_int
 _coreaudio.ExtAudioFileDispose.argtypes = [ctypes.c_void_p]
@@ -299,7 +304,14 @@ class ExtAudioFile(AudioFile):
 
     def read_data(self, blocksize=4096):
         """Generates byte strings reflecting the audio data in the file.
+
+        Each call starts reading from the beginning of the file, so
+        reading the same object twice yields the same data.
         """
+        # Rewind to the first frame so that repeated reads produce
+        # identical data.
+        check(_coreaudio.ExtAudioFileSeek(self._obj, 0))
+
         frames = ctypes.c_uint(blocksize // self._client_fmt.mBytesPerFrame)
         buf = ctypes.create_string_buffer(blocksize)
 

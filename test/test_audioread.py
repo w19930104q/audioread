@@ -43,3 +43,31 @@ def test_audioread_full(audiofile):
         # Now read all the data and assert that it's the correct type.
         for block in a:
             assert type(block) == bytes
+
+
+def test_audioread_read_twice(audiofile):
+    """Reading the same file object twice yields identical data."""
+    with audioread.audio_open(audiofile.path) as a:
+        first = b''.join(a)
+        second = b''.join(a)
+
+    assert len(first) > 0
+    assert first == second
+
+
+def test_audioread_preview_then_full(audiofile):
+    """A partial read followed by a full read yields the full data.
+
+    Each new iteration starts from the beginning of the file, so a
+    "preview" does not consume data from the subsequent full read.
+    """
+    with audioread.audio_open(audiofile.path) as a:
+        # Preview: read only the first block.
+        for _ in a:
+            break
+        preview_then_full = b''.join(a)
+
+    with audioread.audio_open(audiofile.path) as a:
+        full = b''.join(a)
+
+    assert preview_then_full == full

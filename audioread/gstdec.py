@@ -165,6 +165,10 @@ class GstAudioFile(AudioFile):
     def __init__(self, path):
         self.running = False
         self.finished = False
+        # Whether an iteration has been started since the pipeline was
+        # positioned at the beginning. Used to decide when to seek back
+        # to the beginning for a new iteration.
+        self._read_started = False
 
         # Set up the Gstreamer pipeline.
         self.pipeline = Gst.Pipeline()
@@ -372,7 +376,29 @@ class GstAudioFile(AudioFile):
         return val
 
     def __iter__(self):
+        # Each new iteration reads from the beginning of the file, so
+        # iterating over the same object twice yields the same data.
+        if self._read_started:
+            self._rewind()
+        self._read_started = True
         return self
+
+    def _rewind(self):
+        """Return the pipeline to the beginning of the stream."""
+        # Discard any data left over from the previous iteration.
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break
+        # Seek back to the start. The FLUSH flag discards data buffered
+        # inside the pipeline so playback restarts cleanly; this also
+        # restarts a pipeline that already reached EOS.
+        self.pipeline.seek_simple(
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
+            0,
+        )
 
     # Cleanup.
     def close(self, force=False):
