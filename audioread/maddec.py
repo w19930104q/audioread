@@ -24,13 +24,24 @@ class UnsupportedError(DecodeError):
 
 
 class MadAudioFile(AudioFile):
-    """MPEG audio file decoder using the MAD library."""
-    def __init__(self, filename):
+    """MPEG audio file decoder using the MAD library.
+
+    MAD always produces 16-bit signed integer PCM, so the
+    ``preserve_bit_depth`` option is accepted for API uniformity but
+    has no effect: MPEG audio does not carry a source bit depth that
+    could be preserved.
+    """
+    def __init__(self, filename, preserve_bit_depth=False):
         self.fp = open(filename, 'rb')
         self.mf = mad.MadFile(self.fp)
         if not self.mf.total_time():  # Indicates a failed open.
             self.fp.close()
             raise UnsupportedError()
+
+    @property
+    def sample_width(self):
+        """The width in bytes of the PCM samples this file yields."""
+        return 2
 
     def close(self):
         if hasattr(self, 'fp'):

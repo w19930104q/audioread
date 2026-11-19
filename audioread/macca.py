@@ -197,7 +197,7 @@ class ExtAudioFile(AudioFile):
         >>>         do_something(block)
 
     """
-    def __init__(self, filename):
+    def __init__(self, filename, preserve_bit_depth=False):
         url = CFURL(filename)
         try:
             self._obj = self._open_url(url)
@@ -209,6 +209,7 @@ class ExtAudioFile(AudioFile):
         self.closed = False
         self._file_fmt = None
         self._client_fmt = None
+        self._preserve_bit_depth = preserve_bit_depth
 
         self.setup()
 
@@ -279,17 +280,42 @@ class ExtAudioFile(AudioFile):
         ))
         return length.value
 
-    def setup(self, bitdepth=16):
+    @property
+    def sample_width(self):
+        """The width in bytes of the PCM samples this file yields."""
+        return self._client_fmt.mBitsPerChannel // 8
+
+    def setup(self, bitdepth=None):
         """Set the client format parameters, specifying the desired PCM
         audio data format to be read from the file. Must be called
         before reading from the file.
+
+        If ``bitdepth`` is omitted, the source file's bit depth is used
+        when the file was opened with ``preserve_bit_depth=True``;
+        otherwise, 16-bit samples are produced, as before.
         """
+        if bitdepth is None:
+            if self._preserve_bit_depth:
+                source_bits = self.get_file_format().mBitsPerChannel
+                if source_bits in (8, 16, 24, 32):
+                    bitdepth = source_bits
+                else:
+                    # Unknown or non-integer source width: keep the
+                    # conventional 16-bit output.
+                    bitdepth = 16
+            else:
+                bitdepth = 16
+
         fmt = self.get_file_format()
         newfmt = copy.copy(fmt)
 
         newfmt.mFormatID = AUDIO_ID_PCM
-        newfmt.mFormatFlags = \
-            PCM_IS_SIGNED_INT | PCM_IS_PACKED
+        newfmt.mFormatFlags = PCM_IS_SIGNED_INT | PCM_IS_PACKED
+        if bitdepth > 8 and sys.byteorder == 'big':
+            # Explicitly request little-endian samples on big-endian
+            # systems; leaving the flag clear means little-endian, which
+            # is the byte order produced on every other platform.
+            newfmt.mFormatFlags &= ~PCM_IS_BIG_ENDIAN
         newfmt.mBitsPerChannel = bitdepth
         newfmt.mBytesPerPacket = \
             (fmt.mChannelsPerFrame * newfmt.mBitsPerChannel // 8)

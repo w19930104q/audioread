@@ -48,11 +48,30 @@ def byteswap(s):
     return values.tobytes()
 
 
+def _swap_bytes(data, width):
+    """Swap the endianness of every sample of the given width (in
+    bytes) in ``data``. Widths of 1, 2, 3 and 4 bytes are supported; a
+    width of 1 leaves the data untouched.
+    """
+    if width <= 1:
+        return data
+    return audioop.byteswap(data, width)
+
+
 class RawAudioFile(AudioFile):
     """An AIFF, WAV, or Au file that can be read by the Python standard
     library modules ``wave``, ``aifc``, and ``sunau``.
+
+    By default, the audio data is delivered as 16-bit little-endian
+    signed integer PCM, regardless of the bit width stored in the
+    source file. If ``preserve_bit_depth`` is true, the samples are
+    instead delivered using the source file's sample width (8-, 16-,
+    24- or 32-bit). Big-endian source data (AIFF and Au) is still
+    converted to little-endian so that the output byte order is
+    consistent across all supported formats.
     """
-    def __init__(self, filename):
+    def __init__(self, filename, preserve_bit_depth=False):
+        self.preserve_bit_depth = preserve_bit_depth
         self._fh = open(filename, 'rb')
 
         try:
@@ -117,25 +136,58 @@ class RawAudioFile(AudioFile):
         """Length of the audio in seconds (a float)."""
         return float(self._file.getnframes()) / self.samplerate
 
+    @property
+    def sample_width(self):
+        """The width in bytes of the PCM samples this file yields.
+
+        This is two bytes (16-bit) unless the file was opened with
+        ``preserve_bit_depth=True``, in which case it matches the
+        source file's sample width.
+        """
+        if self.preserve_bit_depth:
+            return self._file.getsampwidth()
+        return TARGET_WIDTH
+
     def read_data(self, block_samples=1024):
         """Generates blocks of PCM data found in the file."""
         old_width = self._file.getsampwidth()
-        needs_conversion = old_width != TARGET_WIDTH
+        target_width = (
+            old_width if self.preserve_bit_depth else TARGET_WIDTH
+        )
+        needs_conversion = old_width != target_width
         needs_byteswap = (
             self._needs_byteswap and self._file.getcomptype() != 'sowt'
         )
+        channels = self._file.getnchannels()
+        source_frame_width = old_width * channels
+        remaining_frames = self._file.getnframes()
 
-        while True:
-            data = self._file.readframes(block_samples)
+        while remaining_frames > 0:
+            data = self._file.readframes(
+                min(block_samples, remaining_frames)
+            )
+            if not data:
+                break
+
+            # Some standard-library readers (notably the AIFF reader
+            # on 8-bit data) can append alignment padding that does not
+            # make up a whole frame. Drop it so every block contains an
+            # exact number of frames.
+            usable = len(data) - (len(data) % source_frame_width)
+            if usable != len(data):
+                data = data[:usable]
+            frames_read = len(data) // source_frame_width
+            remaining_frames -= frames_read
             if not data:
                 break
 
             # Make sure we have the desired bitdepth and endianness.
             if needs_conversion:
-                data = audioop.lin2lin(data, old_width, TARGET_WIDTH)
-            if needs_byteswap:
-                # Big-endian data. Swap endianness.
-                data = byteswap(data)
+                data = audioop.lin2lin(data, old_width, target_width)
+            if needs_byteswap and data:
+                # Big-endian data. Swap to the output's little-endian
+                # byte order, using the width actually delivered.
+                data = _swap_bytes(data, target_width)
             yield data
 
     # Context manager.

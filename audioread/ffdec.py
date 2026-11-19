@@ -29,6 +29,22 @@ from .base import AudioFile
 
 COMMANDS = ('ffmpeg', 'avconv')
 
+# PCM sample formats that the FFmpeg backend can emit when preserving
+# the source bit depth, keyed by sample width in bytes. The output is
+# always signed little-endian PCM so that the byte-order semantics are
+# identical to those of the other backends and to the default (16-bit)
+# output.
+_PCM_OUTPUT_FORMATS = {
+    1: 's8',
+    2: 's16le',
+    3: 's24le',
+    4: 's32le',
+}
+
+# The width used when the source stream does not carry a meaningful
+# integer bit depth (e.g. a lossy codec such as MP3).
+DEFAULT_SAMPLE_WIDTH = 2
+
 if sys.platform == "win32":
     PROC_FLAGS = 0x08000000
 else:
@@ -114,14 +130,51 @@ def available():
         return proc.returncode == 0
 
 
+def _parse_sample_width(audio_line):
+    """Parse the integer sample width (in bytes) from an ffmpeg
+    "Audio:" stream description line.
+
+    Falls back to the 16-bit default for floating-point sample
+    formats, lossy codecs and anything that cannot be recognised.
+    """
+    # The actual bit depth is shown explicitly for packed formats such
+    # as 24-bit PCM, which ffmpeg otherwise labels with an internal
+    # sample format ("s32 (24 bit)"). Prefer this value.
+    match = re.search(r'(\d+) bit', audio_line)
+    if match:
+        bits = int(match.group(1))
+        if bits % 8 == 0 and 1 <= bits // 8 <= 4:
+            return bits // 8
+
+    # Otherwise, look for an integer PCM sample-format label such as
+    # "u8", "s16", "s24" or "s32". Floating-point labels ("fltp",
+    # "dbl") deliberately do not match.
+    match = re.search(r'\b([us])(\d{1,2})\b', audio_line)
+    if match:
+        bits = int(match.group(2))
+        if bits % 8 == 0 and 1 <= bits // 8 <= 4:
+            return bits // 8
+
+    return DEFAULT_SAMPLE_WIDTH
+
+
 # For Windows error switch management, we need a lock to keep the mode
 # adjustment atomic.
 windows_error_mode_lock = threading.Lock()
 
 
 class FFmpegAudioFile(AudioFile):
-    """An audio file decoded by the ffmpeg command-line utility."""
-    def __init__(self, filename, block_size=DEFAULT_BUFFER_SIZE):
+    """An audio file decoded by the ffmpeg command-line utility.
+
+    The decoded data is normally 16-bit little-endian signed integer
+    PCM. When ``preserve_bit_depth`` is true, the data is instead
+    delivered using the source stream's integer bit depth (8, 16, 24
+    or 32 bits per sample), still as little-endian signed PCM. For
+    sources without a meaningful integer bit depth (e.g. lossy codecs
+    such as MP3, or floating-point PCM), the output remains 16-bit.
+    """
+    def __init__(self, filename, block_size=DEFAULT_BUFFER_SIZE,
+                 preserve_bit_depth=False):
         # On Windows, we need to disable the subprocess's crash dialog
         # in case it dies. Passing SEM_NOGPFAULTERRORBOX to SetErrorMode
         # disables this behavior.
@@ -138,10 +191,22 @@ class FFmpegAudioFile(AudioFile):
                 previous_error_mode | SEM_NOGPFAULTERRORBOX
             )
 
+        # Determine the output PCM format. The default is unchanged:
+        # 16-bit little-endian. When preserving the bit depth, we
+        # inspect the source stream and select a matching PCM format.
+        if preserve_bit_depth:
+            self._sample_width = self._probe_sample_width(filename)
+            output_format = _PCM_OUTPUT_FORMATS.get(
+                self._sample_width, 's16le'
+            )
+        else:
+            self._sample_width = DEFAULT_SAMPLE_WIDTH
+            output_format = 's16le'
+
         try:
             self.proc = popen_multiple(
                 COMMANDS,
-                ['-i', filename, '-f', 's16le', '-'],
+                ['-i', filename, '-f', output_format, '-'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
@@ -175,6 +240,48 @@ class FFmpegAudioFile(AudioFile):
         # collects the error output for diagnosis.
         self.stderr_reader = QueueReaderThread(self.proc.stderr)
         self.stderr_reader.start()
+
+    @staticmethod
+    def _probe_sample_width(filename):
+        """Determine the source stream's integer sample width in bytes.
+
+        A short-lived ffmpeg process is used just to read the stream
+        description from its standard error. Returns the default width
+        (two bytes) when the source has no meaningful integer bit depth
+        (lossy codecs, floating-point PCM, ...) or when the stream
+        description cannot be parsed.
+        """
+        try:
+            proc = popen_multiple(
+                COMMANDS,
+                ['-hide_banner', '-i', filename],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                creationflags=PROC_FLAGS,
+            )
+        except OSError:
+            return DEFAULT_SAMPLE_WIDTH
+
+        # With no output file ffmpeg exits with a failure status, but
+        # the stream description is still written to stderr first.
+        stderr = proc.stderr.read()
+        proc.wait()
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode('utf8', 'ignore')
+
+        for line in stderr.splitlines():
+            line = line.strip().lower()
+            if 'audio:' not in line:
+                continue
+            return _parse_sample_width(line)
+
+        return DEFAULT_SAMPLE_WIDTH
+
+    @property
+    def sample_width(self):
+        """The width in bytes of the PCM samples this file yields."""
+        return self._sample_width
 
     def read_data(self, timeout=10.0):
         """Read blocks of raw PCM data from the file."""

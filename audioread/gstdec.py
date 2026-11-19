@@ -54,6 +54,7 @@ import sys
 import threading
 import os
 import queue
+import re
 from urllib.parse import quote
 
 from .exceptions import DecodeError
@@ -62,6 +63,47 @@ from .base import AudioFile
 QUEUE_SIZE = 10
 BUFFER_SIZE = 10
 SENTINEL = '__GSTDEC_SENTINEL__'
+
+# GStreamer raw integer PCM format names, grouped by sample width, in
+# the order preferred for output. Little-endian variants come first so
+# the delivered byte order matches the other backends.
+_GST_INT_FORMATS = {
+    1: ('U8',),
+    2: ('S16LE', 'S16BE'),
+    3: ('S24_32LE', 'S24_32BE', 'S24LE', 'S24BE'),
+    4: ('S32LE', 'S32BE'),
+}
+
+# Width in bytes of every raw integer PCM format GStreamer may
+# negotiate with the sink.
+_GST_FORMAT_WIDTHS = {
+    'U8': 1,
+    'S16LE': 2, 'S16BE': 2,
+    'S24LE': 3, 'S24BE': 3,
+    'S24_32LE': 4, 'S24_32BE': 4,
+    'S32LE': 4, 'S32BE': 4,
+}
+
+
+def _format_for_width(width):
+    """Return the preferred GStreamer raw PCM format name for a sample
+    width in bytes, or ``None`` for widths that cannot be delivered as
+    raw integer PCM.
+    """
+    formats = _GST_INT_FORMATS.get(width)
+    return formats[0] if formats else None
+
+
+def _width_from_caps(caps_string):
+    """Extract the sample width in bytes from a raw audio caps string.
+
+    Returns ``None`` if the caps do not describe a recognisable
+    integer PCM format.
+    """
+    match = re.search(r'format=\(string\)(\w+)', caps_string)
+    if not match:
+        return None
+    return _GST_FORMAT_WIDTHS.get(match.group(1).upper())
 
 
 # Exceptions.
@@ -153,18 +195,25 @@ class GstAudioFile(AudioFile):
         >>>     for block in f:
         >>>         do_something(block)
 
-    Iterating the object yields blocks of 16-bit PCM data. Three
-    pieces of stream information are also available: samplerate (in Hz),
-    number of channels, and duration (in seconds).
+    Iterating the object yields blocks of little-endian integer PCM
+    data: 16-bit by default, or the source stream's bit depth when the
+    file was opened with ``preserve_bit_depth=True``. The
+    ``sample_width`` attribute reports the delivered sample width.
+    Three pieces of stream information are also available: samplerate
+    (in Hz), number of channels, and duration (in seconds).
 
     It's very important that the client call close() when it's done
     with the object. Otherwise, the program is likely to hang on exit.
     Alternatively, of course, one can just use the file as a context
     manager, as shown above.
     """
-    def __init__(self, path):
+    def __init__(self, path, preserve_bit_depth=False):
         self.running = False
         self.finished = False
+        self._preserve_bit_depth = preserve_bit_depth
+        # The width of the samples actually negotiated with the sink;
+        # until the caps are known, assume the conventional 16 bits.
+        self._sample_width = 2
 
         # Set up the Gstreamer pipeline.
         self.pipeline = Gst.Pipeline()
@@ -193,13 +242,25 @@ class GstAudioFile(AudioFile):
         # And a callback if decoding fails.
         self.dec.connect("unknown-type", self._unkown_type)
 
-        # Configure the output.
-        # We want short integer data.
+        # Configure the output. We want integer PCM data. Normally,
+        # only 16-bit little-endian is allowed. When preserving the bit
+        # depth, every supported integer width is allowed (still
+        # preferring little-endian); the source's native width is
+        # selected in the pad-added callback below.
+        if preserve_bit_depth:
+            format_names = [
+                name
+                for width in sorted(_GST_INT_FORMATS, reverse=True)
+                for name in _GST_INT_FORMATS[width]
+            ]
+        else:
+            format_names = ['S16LE']
         self.sink.set_property(
             'caps',
-            Gst.Caps.from_string('audio/x-raw, format=(string)S16LE'),
+            Gst.Caps.from_string(
+                'audio/x-raw, format=(string){' + ','.join(format_names) + '}'
+            ),
         )
-        # TODO set endianness?
         # Set up the characteristics of the output. We don't want to
         # drop any data (nothing is real-time here); we should bound
         # the memory usage of the internal queue; and, most
@@ -262,6 +323,12 @@ class GstAudioFile(AudioFile):
         self.channels = info.get_int('channels')[1]
         self.samplerate = info.get_int('rate')[1]
 
+        # Record the width of the samples actually delivered so callers
+        # can interpret the raw buffers.
+        width = _width_from_caps(pad.get_current_caps().to_string())
+        if width is not None:
+            self._sample_width = width
+
         # Query duration.
         success, length = pad.get_peer().query_duration(Gst.Format.TIME)
         if success:
@@ -271,6 +338,11 @@ class GstAudioFile(AudioFile):
 
         # Allow constructor to complete.
         self.ready_sem.release()
+
+    @property
+    def sample_width(self):
+        """The width in bytes of the PCM samples this file yields."""
+        return self._sample_width
 
     _got_a_pad = False
 
@@ -283,6 +355,23 @@ class GstAudioFile(AudioFile):
             nextpad = self.conv.get_static_pad('sink')
             if not nextpad.is_linked():
                 self._got_a_pad = True
+
+                if self._preserve_bit_depth:
+                    # Restrict the sink to the decoded stream's native
+                    # integer width (if it has one) before the pads are
+                    # linked, so audioconvert does not pick a narrower
+                    # format. The little-endian variant is preferred for
+                    # a consistent output byte order.
+                    width = _width_from_caps(name)
+                    format_name = _format_for_width(width)
+                    if format_name is not None:
+                        self.sink.set_property(
+                            'caps',
+                            Gst.Caps.from_string(
+                                'audio/x-raw, format=(string)' + format_name
+                            ),
+                        )
+
                 pad.link(nextpad)
 
     def _no_more_pads(self, element):

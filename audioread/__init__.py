@@ -104,7 +104,7 @@ def available_backends(flush_cache=False):
     return BACKENDS
 
 
-def audio_open(path, backends=None):
+def audio_open(path, backends=None, preserve_bit_depth=False):
     """Open an audio file using a library that is available on this
     system.
 
@@ -115,6 +115,15 @@ def audio_open(path, backends=None):
     backends every time by calling `available_backends` once and passing
     the result to each `audio_open` call.
 
+    By default, the decoded PCM data uses 16-bit samples even when the
+    source has a wider bit depth. When `preserve_bit_depth` is true,
+    backends that can do so deliver samples using the source file's bit
+    depth instead (always as little-endian signed integer PCM). The
+    `sample_width` attribute of the returned object reports the width,
+    in bytes, of the delivered samples. Backends without a meaningful
+    source bit depth (e.g. the MAD and FFmpeg backends on lossy files)
+    keep producing 16-bit data.
+
     If all backends fail to read the file, a NoBackendError exception is
     raised.
     """
@@ -123,7 +132,7 @@ def audio_open(path, backends=None):
 
     for BackendClass in backends:
         try:
-            return BackendClass(path)
+            return BackendClass(path, preserve_bit_depth=preserve_bit_depth)
         except DecodeError:
             pass
 

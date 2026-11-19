@@ -13,6 +13,8 @@
 # included in all copies or substantial portions of the Software.
 
 """Command-line tool to decode audio files to WAV files."""
+import argparse
+
 import audioread
 import sys
 import os
@@ -20,14 +22,16 @@ import wave
 import contextlib
 
 
-def decode(filename):
+def decode(filename, preserve_bit_depth=False):
     filename = os.path.abspath(os.path.expanduser(filename))
     if not os.path.exists(filename):
         print("File not found.", file=sys.stderr)
         sys.exit(1)
 
     try:
-        with audioread.audio_open(filename) as f:
+        with audioread.audio_open(
+            filename, preserve_bit_depth=preserve_bit_depth
+        ) as f:
             print('Input file: %i channels at %i Hz; %.1f seconds.' %
                   (f.channels, f.samplerate, f.duration),
                   file=sys.stderr)
@@ -37,7 +41,7 @@ def decode(filename):
             with contextlib.closing(wave.open(filename + '.wav', 'w')) as of:
                 of.setnchannels(f.channels)
                 of.setframerate(f.samplerate)
-                of.setsampwidth(2)
+                of.setsampwidth(f.sample_width)
 
                 for buf in f:
                     of.writeframes(buf)
@@ -48,4 +52,17 @@ def decode(filename):
 
 
 if __name__ == '__main__':
-    decode(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description='Decode an audio file to a WAV file.'
+    )
+    parser.add_argument(
+        'filename',
+        help='the audio file to decode',
+    )
+    parser.add_argument(
+        '-b', '--preserve-bit-depth',
+        action='store_true',
+        help='keep the source bit depth instead of converting to 16-bit',
+    )
+    args = parser.parse_args()
+    decode(args.filename, args.preserve_bit_depth)

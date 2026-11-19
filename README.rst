@@ -34,14 +34,27 @@ Use the library like so::
 Buffers in the file can be accessed by iterating over the object returned from
 ``audio_open``. Each buffer is a bytes-like object (``buffer``, ``bytes``, or
 ``bytearray``) containing raw **16-bit little-endian signed integer PCM
-data**. (Currently, these PCM format parameters are not configurable, but this
-could be added to most of the backends.)
+data**.
+
+To avoid losing precision when the source uses a wider bit depth (for
+example, 24-bit PCM), pass ``preserve_bit_depth=True`` to ``audio_open`` (or
+to a backend's constructor). The decoded samples are then delivered using the
+source file's bit depth instead: 8-, 16-, 24- or 32-bit samples, still as
+little-endian signed integer PCM so that the byte order is consistent across
+all the formats and backends. The ``sample_width`` attribute of the returned
+object reports the width, in bytes, of the delivered samples (two bytes by
+default). Backends without a meaningful source bit depth, such as the MAD
+backend or the FFmpeg backend reading a lossy file, keep producing 16-bit
+data. When the option is not enabled, the output is byte-for-byte identical
+to previous versions of the library.
 
 Additional values are available as fields on the audio file object:
 
 - ``channels`` is the number of audio channels (an integer).
 - ``samplerate`` is given in Hz (an integer).
 - ``duration`` is the length of the audio in seconds (a float).
+- ``sample_width`` is the width in bytes of the PCM samples yielded by the
+  backend (an integer; 2 for the default 16-bit output).
 
 The ``audio_open`` function transparently selects a backend that can read the
 file. (Each backend is implemented in a module inside the ``audioread``
@@ -77,6 +90,12 @@ Version History
 ---------------
 
 Upcoming
+  Add a ``preserve_bit_depth`` option to ``audio_open`` and every backend.
+  When enabled, PCM data is delivered using the source file's bit depth
+  (8-, 16-, 24- or 32-bit samples) instead of being quantised to 16 bits.
+  The output remains little-endian signed integer PCM across all formats,
+  and the new ``sample_width`` attribute reports the delivered sample width.
+  The default behaviour is unchanged and byte-for-byte compatible.
   Optimize raw backend PCM conversion path in `audioread/rawread.py`. This skips
   a Python loop and can increase loading times by up to a factor of 150x.
 
